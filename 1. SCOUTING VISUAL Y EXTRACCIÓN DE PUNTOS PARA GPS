@@ -1,0 +1,126 @@
+// ============================================================================
+// SCRIPT FASE 1: SCOUTING VISUAL Y EXTRACCIÓN DE PUNTOS PARA GPS (CAMPO)
+// ============================================================================
+
+// 1. PARÁMETROS PRINCIPALES
+var FECHA_MANUAL = '2020-08-16'; // Cambiar según la fecha de tu CSV
+var DIAS_BUSQUEDA_FIRMS = 2;
+var DIAS_ANTES_SENTINEL = 6;
+var DIAS_DESPUES_SENTINEL = 6;
+var CONFIANZA_MINIMA = 60; // Para MODIS será >= 60. Para VIIRS será 'n' o 'h'
+
+// 2. CARGA DE DATOS (CSV FIRMS y Límite Dinámico)
+var firmsPoints = ee.FeatureCollection('projects/generar-contorno/assets/tesis/FIRMS');
+
+// Límite de Leoncio Prado desde la base oficial de la FAO
+var limiteProvincia = ee.FeatureCollection('FAO/GAUL/2015/level2')
+  .filter(ee.Filter.eq('ADM2_NAME', 'Leoncio Prado'));
+
+// 3. PROCESAMIENTO GEOMÉTRICO (Creación de polígonos FIRMS)
+var generarCuadrados = function(feature) {
+  var instrument = ee.String(feature.get('instrument'));
+  var isModis = instrument.compareTo('MODIS').eq(0);
+  
+  // Asignación de radios: MODIS (500m), VIIRS (187.5m)
+  var radio = ee.Number(ee.Algorithms.If(isModis, 500, 187.5));
+  var cuadrado = feature.geometry().buffer(radio).bounds();
+  
+  var confOriginal = ee.String(feature.get('confidence'));
+  var isVIIRS_Valido = confOriginal.compareTo('n').eq(0).or(confOriginal.compareTo('h').eq(0));
+  
+  var confNum = ee.Number(ee.Algorithms.If(
+    isModis,
+    ee.Number.parse(confOriginal), 
+    ee.Algorithms.If(isVIIRS_Valido, 100, 0) 
+  ));
+  
+  return feature.setGeometry(cuadrado).set('confidence_num', confNum);
+};
+
+var firms = firmsPoints.map(generarCuadrados);
+
+// 4. FILTRADO ESPACIO-TEMPORAL
+var fechaManual = ee.Date(FECHA_MANUAL);
+var firmsFiltrados = firms
+  .filterBounds(limiteProvincia) 
+  .filter(ee.Filter.gte('confidence_num', CONFIANZA_MINIMA)) 
+  .filter(ee.Filter.gte('acq_date', fechaManual.advance(-DIAS_BUSQUEDA_FIRMS, 'day').format('YYYY-MM-dd')))
+  .filter(ee.Filter.lte('acq_date', fechaManual.advance(DIAS_BUSQUEDA_FIRMS, 'day').format('YYYY-MM-dd')));
+
+var geomTrabajo = firmsFiltrados.geometry();
+
+// 5. CARGA VISUAL DE SENTINEL-2
+var coleccionS2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterBounds(geomTrabajo)
+  .filterDate(fechaManual.advance(-DIAS_ANTES_SENTINEL, 'day'), fechaManual.advance(DIAS_DESPUES_SENTINEL, 'day'))
+  .sort('CLOUDY_PIXEL_PERCENTAGE');
+
+var listaImagenes = coleccionS2.toList(12);
+var numImagenes = listaImagenes.size().getInfo();
+print('Nº imágenes Sentinel para scouting:', numImagenes);
+
+Map.centerObject(firmsFiltrados, 12);
+Map.setOptions('HYBRID');
+Map.addLayer(limiteProvincia, {color: 'white', fillColor: '00000000'}, 'Límite Leoncio Prado', false);
+
+for (var i = 0; i < numImagenes; i++) {
+  var img = ee.Image(listaImagenes.get(i));
+  var fecha = img.date().format('YYYY-MM-dd').getInfo();
+  // Falso Color (B12, B8, B4) para resaltar las cicatrices oscuras de ceniza
+  Map.addLayer(img, {bands: ['B12','B8','B4'], min:0, max:3000}, fecha + ' S2 Falso Color', false);
+}
+
+Map.addLayer(firmsFiltrados, {color: 'red', fillColor: 'ff000030'}, 'Cajas FIRMS (Radio de búsqueda)');
+
+// ============================================================================
+// 6. EXTRACCIÓN DE COORDENADAS PARA NAVEGADOR GPS (CORREGIDO)
+// ============================================================================
+try {
+  var puntos = ee.FeatureCollection(puntosDibujados);
+  var numPuntos = puntos.size().getInfo();
+  print('Puntos marcados para ir a campo:', numPuntos);
+
+  if (numPuntos > 0) {
+    var listaPuntos = puntos.toList(numPuntos);
+    
+    // Iteramos sobre una secuencia de números [0, 1, 2...] en lugar de los objetos
+    var indices = ee.List.sequence(0, ee.Number(numPuntos).subtract(1));
+    
+    var extraerCoordenadas = indices.map(function(index) {
+      var p = ee.Feature(listaPuntos.get(index));
+      var coordenadas = p.geometry().coordinates();
+      
+      return p.set({
+        'ID_GPS': ee.String('Punto_').cat(ee.Number(index).add(1).format('%d')),
+        'fecha_referencia': FECHA_MANUAL,
+        'longitude': ee.Number(coordenadas.get(0)),
+        'latitude': ee.Number(coordenadas.get(1))
+      });
+    });
+    
+    var puntosFinal = ee.FeatureCollection(extraerCoordenadas);
+
+    print('Coordenadas capturadas:', puntosFinal);
+
+    Export.table.toDrive({
+      collection: puntosFinal,
+      description: 'Puntos_GPS_Campo_' + FECHA_MANUAL.replace(/-/g, ''),
+      folder: 'GEE_exports',
+      fileFormat: 'CSV',
+      selectors: ['ID_GPS', 'fecha_referencia', 'longitude', 'latitude']
+    });
+    
+    Export.table.toDrive({
+      collection: puntosFinal,
+      description: 'Puntos_GPS_KML_' + FECHA_MANUAL.replace(/-/g, ''),
+      folder: 'GEE_exports',
+      fileFormat: 'KML'
+    });
+
+    print('✅ Exportación iniciada.');
+  } else {
+    print('ℹ️ La capa "puntosDibujados" está vacía.');
+  }
+} catch (e) {
+  print('ℹ️ Dibuja puntos en el mapa usando la herramienta 📍 y nombra la capa como "puntosDibujados".');
+}
