@@ -1,0 +1,98 @@
+// ============================================================================
+// SCRIPT FASE 3: EXTRACCIÓN BITEMPORAL DE ÍNDICES (PRODUCCIÓN)
+// Metodología: Composición de medias, Cloud Masking y Remuestreo a 10m.
+// ============================================================================
+
+// 1. CARGA Y PURGA DE LA BASE DE DATOS
+var puntosCampoBruto = ee.FeatureCollection('projects/generar-contorno/assets/tesis/Puntos_Validados_50');
+
+// Filtro de ingeniería: Destruye filas vacías antes de que toquen el algoritmo
+var puntosCampo = puntosCampoBruto
+  .filter(ee.Filter.notNull(['fecha_referencia']))
+  .filter(ee.Filter.neq('fecha_referencia', ''));
+
+var VENTANA_DIAS = 10;
+
+// 2. FUNCIÓN DE ENMASCARAMIENTO ESTRICTO DE NUBES (SCL)
+function maskS2clouds(image) {
+  var scl = image.select('SCL');
+  var mask = scl.eq(4).or(scl.eq(5)).or(scl.eq(6)); 
+  return image.updateMask(mask).divide(10000); 
+}
+
+// 3. MOTOR DE EXTRACCIÓN Y ÁLGEBRA DE MAPAS
+var extraerIndices = function(punto) {
+  var fechaRef = ee.Date.parse('dd/MM/yyyy', punto.get('fecha_referencia'));
+  var geom = punto.geometry();
+
+  var colPre = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+    .filterBounds(geom)
+    .filterDate(fechaRef.advance(-VENTANA_DIAS, 'day'), fechaRef.advance(-1, 'day'))
+    .map(maskS2clouds);
+    
+  var colPost = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+    .filterBounds(geom)
+    .filterDate(fechaRef.advance(1, 'day'), fechaRef.advance(VENTANA_DIAS, 'day'))
+    .map(maskS2clouds);
+
+  // Blindaje Anti-Nubes
+  var hasPre = colPre.size().gt(0);
+  var hasPost = colPost.size().gt(0);
+
+  var nbrPre = ee.Image(ee.Algorithms.If(hasPre,
+    colPre.mean().normalizedDifference(['B8', 'B12']),
+    ee.Image.constant(-9999)
+  )).rename('NBR_PRE');
+
+  var nbrPost = ee.Image(ee.Algorithms.If(hasPost,
+    colPost.mean().normalizedDifference(['B8', 'B12']),
+    ee.Image.constant(-9999)
+  )).rename('NBR_POST');
+
+  var bitemporal = nbrPre.addBands(nbrPost);
+
+  // D. Cálculo de Índices Diferenciales 
+  var dNBR = bitemporal.expression(
+    '(PRE == -9999 || POST == -9999) ? -9999 : (PRE - POST) * 1000', 
+    { 'PRE': bitemporal.select('NBR_PRE'), 'POST': bitemporal.select('NBR_POST') }
+  ).rename('dNBR');
+  bitemporal = bitemporal.addBands(dNBR);
+
+  var RBR = bitemporal.expression(
+    'dNBR == -9999 ? -9999 : dNBR / (PRE + 1.001)', 
+    { 'dNBR': bitemporal.select('dNBR'), 'PRE': bitemporal.select('NBR_PRE') }
+  ).rename('RBR');
+  bitemporal = bitemporal.addBands(RBR);
+
+  var RdNBR = bitemporal.expression(
+    'dNBR == -9999 ? -9999 : (abs(PRE) < 0.001 ? dNBR / sqrt(0.001) : dNBR / sqrt(abs(PRE)))',
+    { 'dNBR': bitemporal.select('dNBR'), 'PRE': bitemporal.select('NBR_PRE') }
+  ).rename('RdNBR');
+  bitemporal = bitemporal.addBands(RdNBR);
+
+  // E. Extracción Espacial Unificada (10m)
+  var valores = bitemporal.reduceRegion({
+    reducer: ee.Reducer.mean(), 
+    geometry: geom,
+    scale: 10,
+    maxPixels: 1e6
+  });
+
+  return punto.set(valores);
+};
+
+// 4. EJECUCIÓN Y EXPORTACIÓN
+var resultadosBrutos = puntosCampo.map(extraerIndices);
+
+// Filtro final: Si la nube mató el dato (-9999), no lo exportamos
+var resultadosLimpios = resultadosBrutos.filter(ee.Filter.neq('dNBR', -9999));
+
+print('Puntos procesados con éxito:', resultadosLimpios.size());
+
+Export.table.toDrive({
+  collection: resultadosLimpios,
+  description: 'Indices_Espectrales',
+  folder: 'Tesis_LeoncioPrado',
+  fileFormat: 'CSV',
+  selectors: ['id_par', 'clase', 'tipo', 'fecha_referencia', 'NBR_PRE', 'NBR_POST', 'dNBR', 'RBR', 'RdNBR', '.geo']
+});
