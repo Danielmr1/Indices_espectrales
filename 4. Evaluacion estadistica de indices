@@ -1,0 +1,97 @@
+"""
+=============================================================================
+FASE 4: EVALUACIÓN ESTADÍSTICA DE ÍNDICES ESPECTRALES (CURVAS ROC)
+Objetivo: Determinar el índice espectral (dNBR, RBR, RdNBR) con mayor 
+capacidad discriminatoria para severidad de incendios y calcular su umbral óptimo.
+=============================================================================
+"""
+
+import pandas as pd
+import numpy as np
+from sklearn.metrics import roc_auc_score, roc_curve
+import matplotlib.pyplot as plt
+
+# 1. INGESTA DE DATOS
+# Carga el CSV exportado directamente desde Google Earth Engine (Fase 3)
+archivo_entrada = 'Indices_Espectrales.csv'
+try:
+    df = pd.read_csv(archivo_entrada)
+except FileNotFoundError:
+    print(f"Error: No se encontró el archivo {archivo_entrada}. Verifica la ruta.")
+    exit()
+
+# 2. PREPARACIÓN DE VARIABLES
+# La columna 'clase' viene de GEE: 1 (Quema) y 0 (Control)
+y_true = df['clase']
+indices = ['dNBR', 'RBR', 'RdNBR']
+
+# 3. MOTOR ESTADÍSTICO (AUC y Youden)
+def calcular_metricas(y_true, y_scores):
+    """Calcula FPR, TPR, AUC, Índice de Youden y Umbral Óptimo."""
+    fpr, tpr, umbrales = roc_curve(y_true, y_scores)
+    auc = roc_auc_score(y_true, y_scores)
+    
+    # Índice de Youden (J = Sensibilidad + Especificidad - 1) equivalente a max(TPR - FPR)
+    indice_youden = tpr - fpr
+    mejor_idx = np.argmax(indice_youden)
+    
+    return {
+        'fpr': fpr,
+        'tpr': tpr,
+        'auc': auc,
+        'max_youden': indice_youden[mejor_idx],
+        'umbral_optimo': umbrales[mejor_idx]
+    }
+
+# Procesar todos los índices
+resultados = {idx: calcular_metricas(y_true, df[idx]) for idx in indices}
+
+# 4. REPORTE DE RESULTADOS
+print("\n" + "="*50)
+print("ANÁLISIS DE CAPACIDAD DISCRIMINATORIA (ROC/AUC)")
+print("="*50)
+print(f"{'ÍNDICE':<10} | {'AUC':<10} | {'YOUDEN (Max)':<15} | {'UMBRAL ÓPTIMO'}")
+print("-" * 50)
+
+mejor_indice = None
+max_auc = 0
+
+for idx in indices:
+    res = resultados[idx]
+    print(f"{idx:<10} | {res['auc']:.4f}     | {res['max_youden']:.4f}          | {res['umbral_optimo']:.4f}")
+    
+    if res['auc'] > max_auc:
+        max_auc = res['auc']
+        mejor_indice = idx
+
+print("-" * 50)
+print(f"CONCLUSIÓN: El índice con mejor rendimiento es {mejor_indice} (AUC: {max_auc:.4f})")
+print("="*50 + "\n")
+
+# 5. RENDERIZADO DEL GRÁFICO
+plt.figure(figsize=(10, 8))
+
+colores = {'dNBR': '#1f77b4', 'RBR': '#ff7f0e', 'RdNBR': '#2ca02c'}
+
+for idx in indices:
+    res = resultados[idx]
+    plt.plot(res['fpr'], res['tpr'], 
+             color=colores[idx], 
+             lw=2, 
+             label=f"{idx} (AUC = {res['auc']:.3f})")
+
+# Línea de no discriminación (Azar)
+plt.plot([0, 1], [0, 1], color='gray', linestyle='--', lw=1)
+
+# Configuraciones visuales
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('Tasa de Falsos Positivos (1 - Especificidad)', fontsize=12)
+plt.ylabel('Tasa de Verdaderos Positivos (Sensibilidad)', fontsize=12)
+plt.title('Curvas ROC: Evaluación de Índices de Severidad Bitemporal', fontsize=14, pad=20)
+plt.legend(loc="lower right", fontsize=11)
+plt.grid(True, alpha=0.3)
+
+# Guardar y mostrar
+plt.savefig('ROC_Indices_Severidad.png', dpi=300, bbox_inches='tight')
+print("Gráfico exportado como 'ROC_Indices_Severidad.png'")
