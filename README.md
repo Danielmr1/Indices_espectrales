@@ -29,7 +29,7 @@ Proceso: Arquitectura de extracción por pares. El algoritmo ingesta las coorden
 ## Fase 5: Inferencia Estadística y Umbrales Óptimos (Python - Scikit-Learn)
 ### Objetivo: Evaluación de la capacidad discriminatoria de los índices en selva alta.
 
-Proceso: Ingesta de la base de datos final de 50 puntos emparejados. Ejecución de análisis de características operativas del receptor (Curvas ROC) para calcular el Área Bajo la Curva (AUC). Determinación matemática del umbral óptimo de detección de cicatrices utilizando la maximización del Índice de Youden, eliminando la dependencia de literatura extranjera.
+Proceso: Ingesta de la base de datos final de 50 puntos emparejados. Ejecución de análisis de características operativas del receptor (Curvas ROC) para calcular el Área Bajo la Curva (AUC). Determinación matemática del umbral óptimo de detección de cicatrices utilizando la maximización del Índice de Youden.
 
 ⚙️ Stack Tecnológico
 Cloud Computing: Google Earth Engine (JavaScript API).
